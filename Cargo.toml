@@ -3,6 +3,16 @@ name = "notion-proxy"
 version = "0.1.0"
 edition = "2021"
 
+# Release profile tuned for AWS Lambda cold-start: strip + LTO + single codegen
+# unit shrink the binary by ~30%, panic=abort drops the unwinding tables we
+# don't need (a panic in a Lambda handler is a fatal error anyway). The trade
+# is slower release builds locally, which is fine — `cargo run` uses dev.
+[profile.release]
+strip = true
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
 [dependencies]
 axum               = "0.8"
 reqwest            = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
@@ -11,11 +21,19 @@ serde_json         = "1"
 tokio              = { version = "1", features = ["full"] }
 tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-sentry             = { version = "0.48", features = ["tracing"] }
-sentry-tower       = "0.48"
+# Disable default-features to drop the `transport` default (which enables
+# reqwest with native-tls = OpenSSL). Re-enable explicitly with rustls so the
+# Linux ARM64 cross-compile from macOS works (no native libssl in scope).
+sentry             = { version = "0.48", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls"] }
+sentry-tower       = { version = "0.48", features = ["http"] }
 tower-http         = { version = "0.6", features = ["cors"] }
 tower_governor     = "0.8"
 hmac               = "0.12"
 sha2               = "0.10"
 hex                = "0.4"
+urlencoding        = "2.1"
 dotenvy            = "0.15"
+# Lambda HTTP runtime adapter: wraps axum services so the same code runs on
+# AWS Lambda Function URLs or API Gateway when AWS_LAMBDA_FUNCTION_NAME is set.
+# Same binary keeps working locally with `axum::serve` when the env var is absent.
+lambda_http        = "0.13"
