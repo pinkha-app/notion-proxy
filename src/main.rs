@@ -7,7 +7,7 @@ use axum::{
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::{net::SocketAddr, sync::Arc};
+use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -102,8 +102,8 @@ async fn health() -> &'static str {
 
 #[tokio::main]
 async fn main() {
-    // Load .env in local dev (no-op in prod where Railway injects env vars).
-    dotenvy::dotenv().ok();
+    // Load .env in local dev (no-op in production).
+    let _ = dotenvy::dotenv();
 
     let dsn = std::env::var("SENTRY_DSN").unwrap_or_default();
     let guard = sentry::init((
@@ -143,11 +143,9 @@ async fn main() {
         .layer(cors)
         .with_state(state);
 
-    // Railway injects PORT automatically; fallback to 3000 for local dev.
     let port = std::env::var("PORT").unwrap_or_else(|_| "3000".into());
-    let addr: SocketAddr = format!("0.0.0.0:{port}").parse().unwrap();
+    let addr = format!("0.0.0.0:{port}");
     tracing::info!("listening on {addr}");
-
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
