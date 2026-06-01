@@ -233,11 +233,17 @@ async fn main() {
             .expect("valid governor config"),
     );
 
+    // Sentry middleware ordering matters: `NewSentryLayer` must wrap every
+    // request in its own hub *before* `SentryHttpLayer` reads the incoming
+    // `sentry-trace` header to continue the distributed trace from the iOS
+    // client. Without `with_transaction`, no transaction is created and the
+    // trace ends at the proxy boundary.
     let app = Router::new()
         .route("/oauth/token", post(exchange_token))
         .route("/health", get(health))
         .layer(GovernorLayer::new(governor_conf))
-        .layer(sentry_tower::SentryLayer::new_from_top())
+        .layer(sentry_tower::SentryHttpLayer::new().enable_transaction())
+        .layer(sentry_tower::NewSentryLayer::new_from_top())
         .layer(build_cors())
         .with_state(state);
 
