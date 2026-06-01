@@ -14,7 +14,9 @@ use std::{
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
-use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
+use tower_governor::{
+    governor::GovernorConfigBuilder, key_extractor::SmartIpKeyExtractor, GovernorLayer,
+};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -268,10 +270,15 @@ async fn main() -> Result<(), lambda_http::Error> {
     });
 
     // Per-IP rate limit: 5 requests / minute, burst of 5.
-    // NOTE: behind Railway's proxy the peer IP is the proxy; if we need true
-    // client IPs, switch to a `SmartIpKeyExtractor` reading X-Forwarded-For.
+    // `SmartIpKeyExtractor` reads `X-Forwarded-For` / `Forwarded` headers so we
+    // get the real client IP when running behind AWS Lambda Function URLs (or
+    // any reverse proxy). The default `PeerIpKeyExtractor` looks at the socket
+    // peer, which is the proxy itself — every request would share the same
+    // bucket. Worse, on Lambda there is no peer socket at all, so the default
+    // extractor errors out with `Unable To Extract Key!` and 500s every call.
     let governor_conf = Arc::new(
         GovernorConfigBuilder::default()
+            .key_extractor(SmartIpKeyExtractor)
             .per_second(12)
             .burst_size(5)
             .finish()

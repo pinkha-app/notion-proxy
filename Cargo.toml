@@ -21,7 +21,10 @@ serde_json         = "1"
 tokio              = { version = "1", features = ["full"] }
 tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-sentry             = { version = "0.48", features = ["tracing"] }
+# Disable default-features to drop the `transport` default (which enables
+# reqwest with native-tls = OpenSSL). Re-enable explicitly with rustls so the
+# Linux ARM64 cross-compile from macOS works (no native libssl in scope).
+sentry             = { version = "0.48", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls"] }
 sentry-tower       = { version = "0.48", features = ["http"] }
 tower-http         = { version = "0.6", features = ["cors"] }
 tower_governor     = "0.8"
