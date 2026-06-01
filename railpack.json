@@ -1,0 +1,7 @@
+{
+  "$schema": "https://schema.railpack.com",
+  "providers": ["rust"],
+  "packages": {
+    "rust": "1.88"
+  }
+}
