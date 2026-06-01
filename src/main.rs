@@ -7,7 +7,7 @@ use axum::{
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 use tower_http::cors::{Any, CorsLayer};
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -27,7 +27,6 @@ struct TokenRequest {
     redirect_uri: String,
 }
 
-/// Subset of Notion's token response — forward everything to the client.
 #[derive(Serialize, Deserialize)]
 struct NotionTokenResponse {
     access_token: String,
@@ -101,11 +100,12 @@ async fn health() -> &'static str {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-#[shuttle_runtime::main]
-async fn main(
-    #[shuttle_runtime::Secrets] secrets: shuttle_runtime::SecretStore,
-) -> shuttle_axum::ShuttleAxum {
-    let dsn = secrets.get("SENTRY_DSN").unwrap_or_default();
+#[tokio::main]
+async fn main() {
+    // Load .env in local dev (no-op in prod where Railway injects env vars).
+    dotenvy::dotenv().ok();
+
+    let dsn = std::env::var("SENTRY_DSN").unwrap_or_default();
     let guard = sentry::init((
         dsn,
         sentry::ClientOptions {
@@ -114,7 +114,6 @@ async fn main(
             ..Default::default()
         },
     ));
-    // Keep the guard alive for the process lifetime.
     Box::leak(Box::new(guard));
 
     tracing_subscriber::fmt()
@@ -126,11 +125,9 @@ async fn main(
 
     let state = Arc::new(AppState {
         http: Client::new(),
-        notion_client_id: secrets
-            .get("NOTION_CLIENT_ID")
+        notion_client_id: std::env::var("NOTION_CLIENT_ID")
             .expect("NOTION_CLIENT_ID is required"),
-        notion_client_secret: secrets
-            .get("NOTION_CLIENT_SECRET")
+        notion_client_secret: std::env::var("NOTION_CLIENT_SECRET")
             .expect("NOTION_CLIENT_SECRET is required"),
     });
 
@@ -146,5 +143,11 @@ async fn main(
         .layer(cors)
         .with_state(state);
 
-    Ok(app.into())
+    // Railway injects PORT automatically; fallback to 3000 for local dev.
+    let port = std::env::var("PORT").unwrap_or_else(|_| "3000".into());
+    let addr: SocketAddr = format!("0.0.0.0:{port}").parse().unwrap();
+    tracing::info!("listening on {addr}");
+
+    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    axum::serve(listener, app).await.unwrap();
 }

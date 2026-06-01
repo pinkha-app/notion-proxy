@@ -4,8 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-shuttle-runtime    = "0.57"
-shuttle-axum       = "0.57"
 axum               = "0.8"
 reqwest            = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 serde              = { version = "1", features = ["derive"] }
@@ -16,3 +14,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 sentry             = { version = "0.48", features = ["tracing"] }
 sentry-tower       = "0.48"
 tower-http         = { version = "0.6", features = ["cors"] }
+dotenvy            = "0.15"
