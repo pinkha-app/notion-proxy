@@ -1,8 +1,8 @@
 use axum::{
     body::Bytes,
-    extract::State,
+    extract::{Query, State},
     http::{HeaderMap, HeaderValue, Method, StatusCode},
-    response::Json,
+    response::{IntoResponse, Json, Redirect},
     routing::{get, post},
     Router,
 };
@@ -14,7 +14,9 @@ use std::{
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
-use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
+use tower_governor::{
+    governor::GovernorConfigBuilder, key_extractor::SmartIpKeyExtractor, GovernorLayer,
+};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -158,6 +160,51 @@ async fn health() -> &'static str {
     "ok"
 }
 
+// ── OAuth callback bridge ─────────────────────────────────────────────────────
+//
+// Notion requires HTTPS redirect URIs since 2024, so the iOS app's custom
+// `pinkha://` scheme can no longer be registered directly with Notion.
+// Instead, this HTTPS endpoint is what Notion redirects to after the user
+// consents, and we immediately bounce the browser to `pinkha://oauth/notion`
+// with the same query string. iOS's `ASWebAuthenticationSession` is watching
+// for that scheme and snaps back into the app.
+//
+// No HMAC: this is a browser-initiated GET, not a signed app request. The
+// `code` carried by Notion is single-use and short-lived, so there's nothing
+// for an attacker to replay.
+
+#[derive(Deserialize)]
+struct OAuthCallbackQuery {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+}
+
+async fn oauth_callback(Query(q): Query<OAuthCallbackQuery>) -> impl IntoResponse {
+    // Forward every relevant parameter to the iOS app. Notion may send
+    // `error` instead of `code` if the user denied consent — let the app
+    // handle that case.
+    let mut target = String::from("pinkha://oauth/notion");
+    let mut sep = '?';
+    for (name, value) in [
+        ("code", q.code.as_deref()),
+        ("state", q.state.as_deref()),
+        ("error", q.error.as_deref()),
+    ] {
+        if let Some(v) = value {
+            // Minimal percent-encoding for query values — we only forward
+            // tokens and short identifiers, never user-controlled HTML.
+            let encoded = urlencoding::encode(v);
+            target.push(sep);
+            target.push_str(name);
+            target.push('=');
+            target.push_str(&encoded);
+            sep = '&';
+        }
+    }
+    Redirect::temporary(&target)
+}
+
 // ── CORS ──────────────────────────────────────────────────────────────────────
 
 fn build_cors() -> CorsLayer {
@@ -190,7 +237,7 @@ fn build_cors() -> CorsLayer {
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), lambda_http::Error> {
     let _ = dotenvy::dotenv();
 
     let dsn = std::env::var("SENTRY_DSN").unwrap_or_default();
@@ -223,27 +270,49 @@ async fn main() {
     });
 
     // Per-IP rate limit: 5 requests / minute, burst of 5.
-    // NOTE: behind Railway's proxy the peer IP is the proxy; if we need true
-    // client IPs, switch to a `SmartIpKeyExtractor` reading X-Forwarded-For.
+    // `SmartIpKeyExtractor` reads `X-Forwarded-For` / `Forwarded` headers so we
+    // get the real client IP when running behind AWS Lambda Function URLs (or
+    // any reverse proxy). The default `PeerIpKeyExtractor` looks at the socket
+    // peer, which is the proxy itself — every request would share the same
+    // bucket. Worse, on Lambda there is no peer socket at all, so the default
+    // extractor errors out with `Unable To Extract Key!` and 500s every call.
     let governor_conf = Arc::new(
         GovernorConfigBuilder::default()
+            .key_extractor(SmartIpKeyExtractor)
             .per_second(12)
             .burst_size(5)
             .finish()
             .expect("valid governor config"),
     );
 
+    // Sentry middleware ordering matters: `NewSentryLayer` must wrap every
+    // request in its own hub *before* `SentryHttpLayer` reads the incoming
+    // `sentry-trace` header to continue the distributed trace from the iOS
+    // client. Without `with_transaction`, no transaction is created and the
+    // trace ends at the proxy boundary.
     let app = Router::new()
         .route("/oauth/token", post(exchange_token))
+        .route("/oauth/callback", get(oauth_callback))
         .route("/health", get(health))
         .layer(GovernorLayer::new(governor_conf))
-        .layer(sentry_tower::SentryLayer::new_from_top())
+        .layer(sentry_tower::SentryHttpLayer::new().enable_transaction())
+        .layer(sentry_tower::NewSentryLayer::new_from_top())
         .layer(build_cors())
         .with_state(state);
 
-    let port = std::env::var("PORT").unwrap_or_else(|_| "3000".into());
-    let addr = format!("0.0.0.0:{port}");
-    tracing::info!("listening on {addr}");
-    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    // Runtime split: AWS Lambda injects `AWS_LAMBDA_FUNCTION_NAME` into the
+    // environment of every invocation. When present, hand the axum service to
+    // `lambda_http::run`; otherwise fall back to the local TCP listener for
+    // `cargo run` and integration tests.
+    if std::env::var("AWS_LAMBDA_FUNCTION_NAME").is_ok() {
+        tracing::info!("starting on Lambda runtime");
+        lambda_http::run(app).await
+    } else {
+        let port = std::env::var("PORT").unwrap_or_else(|_| "3000".into());
+        let addr = format!("0.0.0.0:{port}");
+        tracing::info!("listening on {addr}");
+        let listener = tokio::net::TcpListener::bind(&addr).await?;
+        axum::serve(listener, app).await?;
+        Ok(())
+    }
 }
