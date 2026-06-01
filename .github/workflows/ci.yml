@@ -6,26 +6,37 @@ on:
   pull_request:
     branches: [master, dev]
 
+# Annule les runs en cours quand un nouveau commit arrive sur la même branche.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  rust:
     name: Rust tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust stable
+      - uses: actions/checkout@v6
+      - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
-
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
-
-      - name: cargo check
-        run: cargo check
-
       - name: cargo test
-        run: cargo test
+        run: cargo test --verbose
 
-      - name: cargo audit
-        run: |
-          cargo install cargo-audit --locked
-          cargo audit --deny warnings
+  audit:
+    name: Cargo audit (CVE scan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit
+      - name: Run cargo audit
+        # Fails the build if any known vulnerability is found in the dependency
+        # tree. Dependabot covers GitHub-side scanning; this catches CVEs at PR
+        # time before merge.
+        run: cargo audit --deny warnings
