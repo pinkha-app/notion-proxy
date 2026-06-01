@@ -1,2 +1,7 @@
 [toolchain]
-channel = "1.85.0"
+# Use the latest stable Rust. Pinning a specific minor (e.g. 1.85.0) breaks
+# the build the moment any dep requires a newer rustc — and the ecosystem
+# currently asks for 1.88+ (sentry, tonic, time, icu_*, …). "stable" floats
+# with the toolchain installed on Railpack / CI runners / dev machines and
+# satisfies every transitive dep's MSRV.
+channel = "stable"
