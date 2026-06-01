@@ -235,7 +235,7 @@ fn build_cors() -> CorsLayer {
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), lambda_http::Error> {
     let _ = dotenvy::dotenv();
 
     let dsn = std::env::var("SENTRY_DSN").unwrap_or_default();
@@ -293,9 +293,19 @@ async fn main() {
         .layer(build_cors())
         .with_state(state);
 
-    let port = std::env::var("PORT").unwrap_or_else(|_| "3000".into());
-    let addr = format!("0.0.0.0:{port}");
-    tracing::info!("listening on {addr}");
-    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    // Runtime split: AWS Lambda injects `AWS_LAMBDA_FUNCTION_NAME` into the
+    // environment of every invocation. When present, hand the axum service to
+    // `lambda_http::run`; otherwise fall back to the local TCP listener for
+    // `cargo run` and integration tests.
+    if std::env::var("AWS_LAMBDA_FUNCTION_NAME").is_ok() {
+        tracing::info!("starting on Lambda runtime");
+        lambda_http::run(app).await
+    } else {
+        let port = std::env::var("PORT").unwrap_or_else(|_| "3000".into());
+        let addr = format!("0.0.0.0:{port}");
+        tracing::info!("listening on {addr}");
+        let listener = tokio::net::TcpListener::bind(&addr).await?;
+        axum::serve(listener, app).await?;
+        Ok(())
+    }
 }
