@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Pre-commit hook: run the full test suite before letting a commit through.
+# Activate per clone with:
+#   git config core.hooksPath .githooks
+#
+# Bypass when needed (rare, prefer fixing the failure):
+#   git commit --no-verify
+
+set -euo pipefail
+
+echo "→ cargo test"
+cargo test --quiet
+
+echo "✓ pre-commit OK"
